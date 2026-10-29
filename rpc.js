@@ -28,6 +28,9 @@ export function createRpcHandler(controller, logger) {
       if (endpoint === 'get') return ok(await controller.snapshot())
       if (endpoint === 'save') return ok(await controller.save(payload ?? {}))
       if (endpoint === 'test') return ok(await controller.test(String(payload?.channel ?? '')))
+      // A read receipt from an open page. It is not a setting, so the answer
+      // carries nothing worth returning.
+      if (endpoint === 'seen') return ok(await controller.seen(payload ?? {}))
       return fail(`unknown endpoint "${String(endpoint)}"`)
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)

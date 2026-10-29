@@ -27,6 +27,7 @@ import {
   writeSecret,
 } from './config.js'
 import { RPC_PATH, createRpcRoute } from './rpc.js'
+import { createSeen } from './seen.js'
 
 export const name = 'dsh-notify'
 /**
@@ -56,9 +57,10 @@ export async function apply(ctx) {
   state.settings = buildSettings(state.config, state.secrets).settings
 
   const bridge = createBrowserBridge()
+  const seen = createSeen()
   const deliver = createDeliver({ logger: ctx.logger, bridge })
 
-  const controller = createController(ctx, state, bridge)
+  const controller = createController(ctx, state, bridge, seen)
   await controller.reload()
   // One boot line: enough to tell from the host log that the row is live.
   ctx.logger.info(`dsh-notify: ready, channels: ${state.settings.channels.join(', ') || 'none'}`)
@@ -94,8 +96,12 @@ export async function apply(ctx) {
     }
     if (event.type === 'turn/end') {
       turns.delete(session.id)
+      // The only gate that asks the page: a reply the user is already reading needs
+      // no announcement. Approvals and questions are not asked about — they come
+      // with buttons, and a receipt cannot exist while a turn still runs.
       hold(held, `${session.id}#turn`, state.settings.userIdleMs,
-        () => notify(state.settings, session, turn, event.data, deliver), ctx.logger)
+        () => notify(state.settings, session, turn, event.data, deliver), ctx.logger,
+        (heldAt) => seen.since(session.id, heldAt))
     }
   })
 
@@ -167,12 +173,14 @@ export async function apply(ctx) {
 
 /**
  * Own the live configuration: read it at activation, replace it when the page
- * saves, and answer the page's questions about what is configured.
+ * saves, answer the page's questions about what is configured, and take in what
+ * each open page reports about the human in front of it.
  * @param ctx - the plugin context.
  * @param state - the live configuration and derived settings.
  * @param bridge - the browser channel's long poll.
+ * @param seen - the read receipts every open page sends.
  */
-function createController(ctx, state, bridge) {
+function createController(ctx, state, bridge, seen) {
   /**
    * Adopt one configuration and its secrets, and report channels held back.
    * @param config - normalized configuration.
@@ -257,7 +265,17 @@ function createController(ctx, state, bridge) {
     return { delivered: result.ok, error: result.error }
   }
 
-  return { reload, snapshot, save, test }
+  /**
+   * Adopt one page's read receipt: the conversation a human was looking at. A
+   * receipt without a name is refused, so a malformed one cannot silence anything.
+   * @param input - `{ sessionId }`.
+   */
+  function reportSeen(input) {
+    if (seen.mark(input?.sessionId) !== true) throw new Error('a read receipt needs a session id')
+    return { ok: true }
+  }
+
+  return { reload, snapshot, save, test, seen: reportSeen }
 }
 
 /**
@@ -283,22 +301,34 @@ function isTopLevel(header) {
 /**
  * Send one message now, or hold it for the idle window. Anything the user does
  * inside that window drops it instead: the message exists to cover their absence,
- * so an action taken at the keyboard makes it redundant.
+ * so an action taken at the keyboard makes it redundant. The window closes with
+ * one last question — has the page reported reading this conversation since the
+ * message was held? — and a reply already being read never leaves.
  * @param held - held timers by key.
  * @param key - `<session>#<kind>`, unique per pending notification.
  * @param waitMs - the idle window; `0` delivers immediately.
  * @param message - builds the delivery promise at the moment it is sent.
  * @param logger - the host logger.
+ * @param skip - decides at delivery time, given when the message was held, whether
+ *   it still has a job.
  */
-function hold(held, key, waitMs, message, logger) {
+function hold(held, key, waitMs, message, logger, skip) {
   dropHeld(held, key)
-  if (waitMs <= 0) {
+  const heldAt = Date.now()
+  const send = () => {
+    if (skip?.(heldAt) === true) {
+      logger.info(`dsh-notify: ${key} dropped, the page reported reading that conversation`)
+      return
+    }
     fire(message(), logger)
+  }
+  if (waitMs <= 0) {
+    send()
     return
   }
   const timer = setTimeout(() => {
     held.delete(key)
-    fire(message(), logger)
+    send()
   }, waitMs)
   // A held message must not keep the host process alive on its own.
   timer.unref?.()

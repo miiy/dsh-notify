@@ -25,6 +25,7 @@
     "client.js",
     "channels.js",
     "browser.js",
+    "seen.js",
     "config.js",
     "rpc.js",
     "cordis.patch.yml",

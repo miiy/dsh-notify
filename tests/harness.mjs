@@ -13,6 +13,7 @@ import { apply, inject, name, renderTemplate } from '../index.js'
 import { toastCommand } from '../channels.js'
 import { RPC_PATH } from '../rpc.js'
 import { EVENTS_PATH } from '../browser.js'
+import { createSeen } from '../seen.js'
 import { DEFAULT_CONFIG, DEFAULT_TEMPLATES, buildSettings, normalizeConfig } from '../config.js'
 
 // Sends are stubbed at the process boundary: a fake binary first on PATH for the
@@ -450,6 +451,70 @@ const cases = [
       // held message watches: the user is at the keyboard, so nothing is sent.
       await askQuestion(booted, [{ question: 'which one?' }], 0)
       assert.equal(reports(booted.lines).length, 0, 'a cancelled message was still delivered')
+    },
+  },
+  {
+    name: 'a page reporting reading drops the held message',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      const session = sessionOf('session-1')
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+      booted.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      // The page saw the turn finish and then a human scrolled, clicked or typed.
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      const receipt = await booted.rpc('seen', { sessionId: 'session-1' })
+      assert.equal(receipt.ok, true)
+      await waitForReports(booted, 0)
+      assert.equal(reports(booted.lines).length, 0, 'the message left although the reply was being read')
+      assert.match(booted.lines.map((entry) => entry.line).join('\n'), /dropped, the page reported reading/)
+    },
+  },
+  {
+    name: 'a receipt from before the message was held does not drop it',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      // Reading the previous reply says nothing about this one.
+      await booted.rpc('seen', { sessionId: 'session-1' })
+      await new Promise((resolve) => setTimeout(resolve, 5))
+      const session = sessionOf('session-1')
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+      booted.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      await waitForReports(booted, liveChannels(booted))
+      assert.equal(deliveries(booted.lines).length, liveChannels(booted))
+    },
+  },
+  {
+    name: 'a receipt for another session does not drop it',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      const session = sessionOf('session-1')
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+      booted.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      await booted.rpc('seen', { sessionId: 'session-9' })
+      await waitForReports(booted, liveChannels(booted))
+      assert.equal(deliveries(booted.lines).length, liveChannels(booted))
+    },
+  },
+  {
+    name: 'a read receipt without a session id is refused',
+    run: async () => {
+      const booted = await boot(BASE, fakeCredentials())
+      const result = await booted.rpc('seen', {})
+      assert.equal(result.ok, false)
+      assert.match(result.error.message, /session id/)
+    },
+  },
+  {
+    name: 'only a receipt from inside the window counts',
+    run: async () => {
+      let clock = 1_000_000
+      const seen = createSeen(() => clock)
+      assert.equal(seen.mark('s1'), true)
+      assert.equal(seen.since('s1', 999_999), true, 'a receipt after the message was held must count')
+      assert.equal(seen.since('s1', 1_000_001), false, 'a receipt from before the message was held must not')
+      assert.equal(seen.since('s2', 999_999), false, 'another session is not covered')
+      assert.equal(seen.mark(''), false)
+      assert.equal(seen.mark(undefined), false)
     },
   },
   {

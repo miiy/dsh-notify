@@ -151,6 +151,19 @@ class FakeEventSource {
 }
 globalThis.EventSource = FakeEventSource
 
+/** Listeners the page registered, one per event type, for the read detector. */
+const documentListeners = new Map()
+
+/** Stand-in for the page: it only has to accept and drop listeners. */
+globalThis.document = {
+  addEventListener(type, handler) {
+    documentListeners.set(type, handler)
+  },
+  removeEventListener(type, handler) {
+    if (documentListeners.get(type) === handler) documentListeners.delete(type)
+  },
+}
+
 /** The React module and the plugin the loader received. */
 const React = createReact()
 globalThis.window = {
@@ -212,6 +225,7 @@ const answers = {
   // A real save adopts what was posted, so the page re-renders from it.
   save: (payload) => ({ ok: true, value: { ...snapshot, config: payload.config } }),
   test: () => ({ ok: true, value: { delivered: true, error: undefined } }),
+  seen: () => ({ ok: true, value: { ok: true } }),
 }
 
 /** The client context the plugin registers into. */
@@ -219,7 +233,24 @@ const registered = {}
 const effects = []
 const cleanups = []
 const copy = {}
+/** Whether the conversation on screen is still producing output. */
+let liveRunning = true
+
 const ctx = {
+  // The read detector asks the catalog for the session and its running state.
+  get(name) {
+    if (name !== 'sessions') return undefined
+    return {
+      list: {
+        getSnapshot: () => ({
+          byId: {
+            'session-live': { id: 'session-live', running: liveRunning, retainedBy: { mainView: 1 } },
+            'session-other': { id: 'session-other', running: false, retainedBy: {} },
+          },
+        }),
+      },
+    }
+  },
   effect(run, label) {
     effects.push(label)
     cleanups.push(run())
@@ -264,8 +295,36 @@ assert.equal(registered.options.label(), '通知')
 assert.deepEqual(effects, [
   'dsh-notify: copy',
   'dsh-notify: browser channel',
+  'dsh-notify: reading',
   'dsh-notify: settings section',
 ])
+
+/** Read receipts the page has posted so far. */
+const receipts = () => calls.filter((entry) => entry.endpoint === 'seen')
+
+// Mounting says nothing: a receipt means somebody acted, not that a page exists.
+assert.equal(receipts().length, 0)
+for (const type of ['pointerdown', 'wheel', 'touchmove', 'keydown']) {
+  assert.equal(typeof documentListeners.get(type), 'function', `nothing listens for ${type}`)
+}
+
+// While the turn still runs the page stays quiet: the output is not final and the
+// GUI is scrolling by itself.
+documentListeners.get('pointerdown')()
+assert.equal(receipts().length, 0)
+
+// The turn finishes, then one act in the page: a receipt for what is on screen.
+liveRunning = false
+documentListeners.get('pointerdown')()
+assert.equal(receipts().length, 1)
+assert.equal(receipts()[0].url, '/dsh-notify/rpc')
+assert.equal(receipts()[0].method, 'POST')
+assert.equal(receipts()[0].payload.sessionId, 'session-live')
+
+// One burst of input is one act, not one receipt per event.
+documentListeners.get('wheel')()
+documentListeners.get('keydown')()
+assert.equal(receipts().length, 1)
 
 // The browser channel opens one event stream as soon as permission is granted.
 assert.equal(streams.length, 1)
@@ -415,13 +474,16 @@ const testCall = calls.find((entry) => entry.endpoint === 'test')
 assert.equal(testCall.payload.channel, 'feishu')
 assert.match(textOf(React.render(registered.component, props)), /测试消息已发出/)
 
-// Unload closes the stream and opens nothing else.
+// Unload closes the stream, opens nothing else, and stops listening.
 cleanups[1]()
 assert.equal(streams.length, 1)
 assert.equal(streams[0].closed, true)
+cleanups[2]()
+assert.equal(documentListeners.size, 0, 'the read listeners outlived the plugin')
 
 console.log('ok   the client half loads under the module loader and registers one Settings section')
 console.log('ok   the browser channel opens one event stream and shows every frame')
+console.log('ok   the page reports reading only after the turn ends, and stops when the plugin unloads')
 console.log('ok   the page loads its state over RPC and renders every channel')
 console.log('ok   a configured credential reads as set, a missing one as not configured')
 console.log('ok   saving sends the edited configuration back')

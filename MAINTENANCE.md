@@ -38,7 +38,8 @@ below is the whole adaptation guide.
 `connection.rpc.handle` is deliberately unused: on dsh 0.2.x it registers through the connection
 service's own Context, so a call from any plugin outside it fails and takes the rest of the plugin's
 setup with it. The page posts to `/dsh-notify/rpc` instead — one `POST`, one `{ endpoint, payload }`
-body, one `{ ok, value }` / `{ ok, error: { message } }` envelope.
+body, one `{ ok, value }` / `{ ok, error: { message } }` envelope. Four endpoints ride it: `get`,
+`save`, `test`, and `seen`, the read receipt an open page posts when somebody touches it.
 
 ### Client half (`client.js`)
 
@@ -54,6 +55,9 @@ body, one `{ ok, value }` / `{ ok, error: { message } }` envelope.
 | `webServer.register({ kind: 'exact', path, handler })` | `packages/host/webserver` (`UpgradeRoute`/`Route` registry; the SSE path is excluded from compression) | the stream route never mounts and the browser channel reports `no page is listening` |
 | `connection.requestRejection(request)` | `packages/client/connection` host side (`HostConnectionService`, same fence `/api` uses) | remove it and the stream leaks turns to an unauthenticated caller — keep the call even if the signature moves |
 | `new EventSource('/dsh-notify/events')` + `onopen` / `onmessage` / `onerror` | the browser (`window`) | the page stays on "Allowed, reconnecting." and never pops; the host still logs `browser failed: no page is listening` |
+| `ctx.get('sessions')` → `sessions.list.getSnapshot().byId[]` with `retainedBy.mainView` and `running` | `packages/api/session-controller` (`SessionListState`, the same `mainView` retention and running flag the workspace UI reads) | the page cannot tell which conversation is on screen, or whether its output has finished, so it posts no receipts and **no message is ever suppressed**; the reading gate silently becomes a no-op |
+| `pointerdown` / `wheel` / `touchmove` / `keydown` on `document`, `{ passive: true }` | the browser | receipts stop arriving: nothing is suppressed any more. These are the events a person makes; the GUI's own follow-the-output scrolling raises none of them, which is why the page listens for the causes rather than for `scroll` |
+| `POST /dsh-notify/rpc` `{ endpoint: 'seen' }` answered `{ ok: true }` | this plugin's own `rpc.js` | a host that predates the endpoint answers `ok: false`; the page ignores every answer, so the only symptom is one warning line per human act in the host log |
 
 ### Package metadata
 
@@ -91,12 +95,26 @@ start needs the flag.
   logged and never blocks the others or the turn.
 - The browser channel publishes to open streams only. Nothing is queued: with no page
   attached the send is reported as `no page is listening`.
-- `userIdleMs` is the only gate on delivery: every message is held for that long and
+- `userIdleMs` is the first gate on delivery: every message is held for that long and
   dropped when the user acts first. A `turn/start` clears the session, `approval/decided`
   clears that ask, and answering a question clears it, so a message leaves only once the
   user has actually stepped away. Default 60 s; `0` delivers immediately. Held timers are
   unref'd, so a pending message never keeps the host alive, and a host that exits inside
   the window loses that message.
+- A turn-end message has a second gate, applied at the moment the window closes. It is a read
+  receipt, not a prediction: the page notices the turn finish at the same moment the host
+  does (`running` going false), and from then on every `pointerdown` / `wheel` / `touchmove`
+  / `keydown` it receives was made by a person — scrolling, clicking, typing — because the
+  GUI's follow-the-output scrolling stops with the turn and raises none of those events. The
+  page posts `{ sessionId }` to `seen` (throttled to one per second), the host stamps it, and
+  a message held before that stamp is dropped. Receipts from before the hold, from another
+  session, or with no session id suppress nothing; a page nobody touched sends none, so
+  silence always means "send". Approvals and questions have no such gate: they come with
+  buttons, and a receipt cannot exist while a turn is still running. Dropped at that gate logs
+  `<session>#<kind> dropped, the page reported reading that conversation`.
+- Consequences worth knowing: a user who watches a short reply without touching anything
+  still gets the message (no receipt), and so does a page left open while its owner walks
+  away — which is the case the previous window alone used to miss.
 
 ## Storage contract
 
@@ -119,6 +137,7 @@ git -C <dsh-checkout> log --oneline <old>..<new> -- \
   packages/agent/agent-loop/src/index.ts \
   packages/core/user-approval/src/index.ts \
   packages/core/user-questions/src/index.ts \
+  packages/api/session-controller/src/client/sessions \
   packages/credentials \
   packages/client/connection \
   packages/client/ui-slots/src/index.ts
@@ -148,11 +167,20 @@ node tests/client.mjs
      `left off: desktop notifications on freebsd` → the host has no notification path
    - `sent (<title>)` when a tool waits for a decision or the agent asks a question; the
      title is that event's word from `DEFAULT_TITLES`
+   - `dropped, the page reported reading that conversation` instead of `sent` → somebody
+     scrolled, clicked or typed in that conversation after the output finished, so the
+     message was withheld on purpose
    - no line at all → the row is not mounted, the event kind is excluded, or
      `notifyOnApproval` / `notifyOnQuestion` is off
 2. **Page**: open Settings → Notifications. It must list four channels, mark the
    credentials that exist as configured, save without a restart, and the **Send test**
    button must deliver a real message.
+2b. **Reading**: with the GUI open on a conversation, finish a turn and then scroll, click or
+   type in that conversation within the idle window. Nothing should arrive (desktop, phone,
+   Feishu) and the host log should say `dropped, the page reported reading that
+   conversation`. Finish another turn without touching the page: the message arrives. If the
+   silent case never happens, the page is not producing receipts — check the network panel
+   for `seen` POSTs and the console for a failing `ctx.get('sessions')`.
 3. **Windows**: the same run on Windows must log `local sent` and pop a toast in the
    notification centre. Attribution reads "Windows PowerShell"; that is the cost of not
    registering an AppUserModelID. `local failed: …` means PowerShell 5.1 or the WinRT

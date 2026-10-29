@@ -1,10 +1,14 @@
 /**
- * Client half of dsh-notify: the settings page.
+ * Client half of dsh-notify: the settings page and the page's read receipts.
  *
  * One Settings entry, no build step. It reads the live configuration over the
  * Host connection, edits it, and sends test messages per channel. Secrets are
  * write-only here: the page learns whether a credential is set, never its
  * value, because the Host credential seam never returns one.
+ *
+ * It also watches for reading — a scroll, a click, a keystroke after the output
+ * finished — because the Host can see every session event but has no way of
+ * knowing that the reply is already on the user's screen.
  */
 window.__ModuleLoader__.load({
   id: 'dsh-notify',
@@ -238,6 +242,88 @@ window.__ModuleLoader__.load({
       notification.onclick = () => {
         globalThis.focus()
         notification.close()
+      }
+    }
+
+    /** Least gap between two read receipts: one burst of input is one act. */
+    const SEEN_THROTTLE_MS = 1_000
+
+    /** The input events only a person can produce; see `startReading`. */
+    const HUMAN_EVENTS = ['pointerdown', 'wheel', 'touchmove', 'keydown']
+
+    /**
+     * The conversation the main view holds, when the client catalog is reachable.
+     * @param ctx - the client context.
+     */
+    function mainRow(ctx) {
+      try {
+        const byId = ctx.get?.('sessions')?.list?.getSnapshot?.()?.byId ?? {}
+        // Walked, not collected: this runs on every wheel tick of a long scroll.
+        for (const id in byId) {
+          const entry = byId[id]
+          if ((entry?.retainedBy?.mainView ?? 0) > 0) return entry
+        }
+        return undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * Tell the host that somebody is reading this conversation.
+     *
+     * The page notices the turn finish at the same moment the host does: `running`
+     * goes false. That is the moment to start listening, and the moment the GUI's
+     * own follow-the-output scrolling stops. From there on, anything the page
+     * receives was made by a person — a scroll, a click, a keystroke — and each one
+     * is a read receipt for the session on screen. Bytes from the agent never
+     * produce these events, so a page nobody is touching stays silent, and silence
+     * is what keeps a message on its way out.
+     * @param ctx - the client context.
+     * @returns the teardown.
+     */
+    function startReading(ctx) {
+      const doc = globalThis.document
+      if (doc === undefined || typeof doc.addEventListener !== 'function') return () => {}
+
+      /** Last receipt posted; one burst of input is one act, not one per event. */
+      let sentAt = 0
+
+      /** Post one receipt; the host is the only reader and a failure changes nothing. */
+      function post(sessionId) {
+        try {
+          void Promise.resolve(fetch(RPC_PATH, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ endpoint: 'seen', payload: { sessionId } }),
+            credentials: 'same-origin',
+          })).catch(() => {})
+        } catch {
+          // A page that cannot reach the host simply leaves the message alone.
+        }
+      }
+
+      /**
+       * One act in the page. Ignored while the turn still runs: the output is not
+       * final, and the page is scrolling by itself.
+       */
+      function report() {
+        const row = mainRow(ctx)
+        if (row === undefined || row.running !== false) return
+        const now = Date.now()
+        if (now - sentAt < SEEN_THROTTLE_MS) return
+        sentAt = now
+        post(row.id)
+      }
+
+      const attached = []
+      for (const type of HUMAN_EVENTS) {
+        doc.addEventListener(type, report, { passive: true })
+        attached.push(type)
+      }
+
+      return () => {
+        for (const type of attached) doc.removeEventListener(type, report)
       }
     }
 
@@ -792,6 +878,9 @@ window.__ModuleLoader__.load({
           startBrowserStream()
           return stopBrowserStream
         }, 'dsh-notify: browser channel')
+        // Every open page listens for reading, not only the one showing Settings:
+        // the whole point is knowing about the page the user is already in.
+        ctx.effect(() => startReading(ctx), 'dsh-notify: reading')
         ctx.effect(() => ctx.slots.inject('settings.section', () => ctx.slots.register({
           name: 'settings.section',
           id: 'dsh-notify',

@@ -11,7 +11,9 @@ an ntfy push to your phone, a Feishu bot message, in any combination.
 - Four channels: the OS notification centre (macOS / Windows / Linux), your own browser
   tab, ntfy, and a Feishu bot
 - Only when you have stepped away: every message waits for an idle window (60 s by
-  default) and is dropped if you act inside it — reply, approve, or answer
+  default) and is dropped if you act inside it — reply, approve, answer — or if you are
+  already reading the reply: once the turn ends, a scroll, a click or a keystroke in that
+  conversation is a read receipt, and the message stays unsent
 - Secrets stay in the Host credential seam, never in the configuration file
 
 ![Plugin icon](icon.svg)
@@ -75,7 +77,7 @@ Open **Settings → Notifications**.
 | Turn completes | Notify on `completed` / `error` / `max-tokens`; `aborted` (your own stop) is never offered. |
 | Waiting for approval | Notify when a tool call asks for a decision. |
 | Waiting for an answer | Notify when the agent asks you a question. |
-| Shortest turn to report | Seconds; `0` reports every turn. |
+| Wait before sending | Seconds without input before a message leaves; `0` sends at once. |
 | Message text | One template per event, prefilled with the default text. First line is the title, the rest is the body; **Restore** puts the default back. |
 | Send test | Send one real message through that channel, using the **saved** values. |
 
@@ -100,8 +102,9 @@ node tests/client.mjs    # settings page
 
 ```
 index.js          Host half: session events and the question waterfall in, notifications out
-client.js         Client half: the settings page and the browser channel
+client.js         Client half: the settings page, the browser channel and read receipts
 browser.js        The browser channel: one SSE stream per page
+seen.js           Read receipts: who touched which conversation, and when
 config.js         Config file, validation, credential keys and the live settings
 rpc.js            The settings page's POST route and envelope
 channels.js       local / ntfy / feishu senders
