@@ -63,7 +63,7 @@ window.__ModuleLoader__.load({
       outcomeLimit: '超时/超限',
       onApproval: '等你审批',
       onQuestion: '等你回答',
-      minDuration: '最短回合时长（秒）',
+      idleNotify: '无交互（秒）后才通知',
       templates: '通知内容',
       templateShape: '第一行是标题，其余是正文；花括号会替换成真实值。',
       templateTurnEnd: '回合结束',
@@ -133,7 +133,7 @@ window.__ModuleLoader__.load({
       outcomeLimit: 'Token limit',
       onApproval: 'Waiting for approval',
       onQuestion: 'Waiting for an answer',
-      minDuration: 'Shortest turn to report (seconds)',
+      idleNotify: 'Only after (seconds) without input',
       templates: 'Message text',
       templateShape: 'First line is the title, the rest is the body; names in braces are replaced with real values.',
       templateTurnEnd: 'Turn ends',
@@ -404,7 +404,7 @@ window.__ModuleLoader__.load({
         setView(snapshot)
         setForm({
           ...snapshot.config,
-          minTurnDurationSec: Math.round((snapshot.config.minTurnDurationMs ?? 0) / 1000),
+          userIdleSec: Math.round((snapshot.config.userIdleMs ?? 0) / 1000),
         })
       }
 
@@ -476,7 +476,7 @@ window.__ModuleLoader__.load({
             notifyOn: form.notifyOn,
             notifyOnApproval: form.notifyOnApproval,
             notifyOnQuestion: form.notifyOnQuestion,
-            minTurnDurationMs: Math.max(0, Math.round(Number(form.minTurnDurationSec ?? 0) * 1000)),
+            userIdleMs: Math.max(0, Math.round(Number(form.userIdleSec ?? 0) * 1000)),
             local: form.local,
             ntfy: form.ntfy,
             feishu: form.feishu,
@@ -702,7 +702,16 @@ window.__ModuleLoader__.load({
         h('div', { key: 'when', style: styles.group }, [
           h('div', { key: 't', style: styles.groupTitle }, t('when')),
           h('div', { key: 'b', style: styles.box }, [
-            h('div', { key: 'approval', style: styles.channelFirst }, [
+            // Timing comes before the triggers: it decides whether a message leaves at
+            // all, and it is the only setting here that is not a trigger.
+            h('div', { key: 'idle', style: styles.channelFirst }, [
+              fieldRow('idle', t('idleNotify'), h('input', {
+                key: 'i', type: 'number', min: 0, style: styles.input,
+                value: form.userIdleSec,
+                onChange: (event) => patch({ userIdleSec: event.target.value }),
+              })),
+            ]),
+            h('div', { key: 'approval', style: styles.channel }, [
               checkbox(form.notifyOnApproval, () => patch({ notifyOnApproval: !form.notifyOnApproval }), t('onApproval'), 'approval'),
             ]),
             h('div', { key: 'question', style: styles.channel }, [
@@ -719,12 +728,6 @@ window.__ModuleLoader__.load({
                     t(entry.copy),
                     entry.key,
                   ))),
-                  // The floor only ever suppresses turn-end messages, so it lives here.
-                  fieldRow('min', t('minDuration'), h('input', {
-                    key: 'i', type: 'number', min: 0, style: styles.input,
-                    value: form.minTurnDurationSec,
-                    onChange: (event) => patch({ minTurnDurationSec: event.target.value }),
-                  })),
                 ])
                 : null,
             ]),

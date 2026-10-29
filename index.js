@@ -64,15 +64,26 @@ export async function apply(ctx) {
   ctx.logger.info(`dsh-notify: ready, channels: ${state.settings.channels.join(', ') || 'none'}`)
 
   const turns = new Map()
+  // One held message per pending notification, keyed "<session>#<kind>": the idle
+  // window is how long the user has to stay quiet before they are told.
+  const held = new Map()
 
   // Turn boundaries drive the duration and the closing excerpt.
   ctx.on('session/event', (session, event) => {
     if (event.type === 'turn/start') {
+      // A new turn is the user back at the keyboard: nothing held survives it.
+      dropSession(held, session.id)
       turns.set(session.id, { startedAt: Date.now(), preview: '' })
       return
     }
     if (event.type === 'approval/asked') {
-      fire(notifyApproval(state.settings, session, event.data, deliver), ctx.logger)
+      hold(held, `${session.id}#approval:${event.data.id}`, state.settings.userIdleMs,
+        () => notifyApproval(state.settings, session, event.data, deliver), ctx.logger)
+      return
+    }
+    if (event.type === 'approval/decided') {
+      // Answered by the user themselves; the held message has nothing left to say.
+      dropHeld(held, `${session.id}#approval:${event.data.id}`)
       return
     }
     const turn = turns.get(session.id)
@@ -83,7 +94,8 @@ export async function apply(ctx) {
     }
     if (event.type === 'turn/end') {
       turns.delete(session.id)
-      fire(notify(state.settings, session, turn, event.data, deliver), ctx.logger)
+      hold(held, `${session.id}#turn`, state.settings.userIdleMs,
+        () => notify(state.settings, session, turn, event.data, deliver), ctx.logger)
     }
   })
 
@@ -91,14 +103,20 @@ export async function apply(ctx) {
   // ever claiming it, so the real answerer still decides. The switch is read per
   // request, because the settings page can turn it off while this runs.
   ctx.on('user-questions/request', (request, next) => {
+    const key = `${request?.agent?.session?.id ?? ''}#question`
     if (state.settings.notifyOnQuestion) {
-      fire(notifyQuestion(state.settings, request, deliver), ctx.logger)
+      hold(held, key, state.settings.userIdleMs,
+        () => notifyQuestion(state.settings, request, deliver), ctx.logger)
     }
-    return next()
+    const answered = next()
+    // The answer is the user being present: drop the message the moment they reply.
+    answered.then(() => dropHeld(held, key), () => dropHeld(held, key))
+    return answered
   })
 
   ctx.on('session/disposed', (session) => {
     turns.delete(session.id)
+    dropSession(held, session.id)
   })
 
   // Both faces of the page are plain routes on the Host web server: the settings
@@ -263,6 +281,55 @@ function isTopLevel(header) {
 }
 
 /**
+ * Send one message now, or hold it for the idle window. Anything the user does
+ * inside that window drops it instead: the message exists to cover their absence,
+ * so an action taken at the keyboard makes it redundant.
+ * @param held - held timers by key.
+ * @param key - `<session>#<kind>`, unique per pending notification.
+ * @param waitMs - the idle window; `0` delivers immediately.
+ * @param message - builds the delivery promise at the moment it is sent.
+ * @param logger - the host logger.
+ */
+function hold(held, key, waitMs, message, logger) {
+  dropHeld(held, key)
+  if (waitMs <= 0) {
+    fire(message(), logger)
+    return
+  }
+  const timer = setTimeout(() => {
+    held.delete(key)
+    fire(message(), logger)
+  }, waitMs)
+  // A held message must not keep the host process alive on its own.
+  timer.unref?.()
+  held.set(key, timer)
+}
+
+/**
+ * Drop the held message for one key, if any.
+ * @param held - held timers by key.
+ * @param key - the notification whose message no longer applies.
+ */
+function dropHeld(held, key) {
+  const timer = held.get(key)
+  if (timer === undefined) return
+  clearTimeout(timer)
+  held.delete(key)
+}
+
+/**
+ * Drop every held message for one session: the user is back in it.
+ * @param held - held timers by key.
+ * @param sessionId - the session the user returned to.
+ */
+function dropSession(held, sessionId) {
+  const prefix = `${sessionId}#`
+  for (const key of [...held.keys()]) {
+    if (key.startsWith(prefix)) dropHeld(held, key)
+  }
+}
+
+/**
  * Run a notification without letting a failure reach the caller: these are
  * fire-and-forget from inside event handlers that must stay synchronous.
  * @param promise - the pending notification.
@@ -293,7 +360,6 @@ async function notify(settings, session, turn, data, deliver) {
   if (!settings.notifyOn.includes(kind)) return
 
   const elapsedMs = Date.now() - turn.startedAt
-  if (elapsedMs < settings.minTurnDurationMs) return
 
   const { title, body } = renderTemplate(settings.templates.turnEnd, {
     title: titleFor(kind),

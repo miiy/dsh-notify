@@ -56,6 +56,9 @@ export const DEFAULT_TEMPLATES = {
 /** Longest template accepted, in characters. */
 export const MAX_TEMPLATE_CHARS = 2000
 
+/** Longest idle window accepted before a turn-end message goes out. */
+export const MAX_USER_IDLE_MS = 3_600_000
+
 /** ntfy priorities accepted by the server. */
 const KNOWN_PRIORITIES = ['min', 'low', 'default', 'high', 'max']
 
@@ -65,7 +68,7 @@ export const DEFAULT_CONFIG = {
   notifyOn: ['completed', 'error', 'max-tokens'],
   notifyOnApproval: true,
   notifyOnQuestion: true,
-  minTurnDurationMs: 0,
+  userIdleMs: 60_000,
   local: { sound: true },
   ntfy: { baseUrl: 'https://ntfy.sh', priority: 'default' },
   feishu: { baseUrl: 'https://open.feishu.cn/open-apis/bot/v2/hook/' },
@@ -136,9 +139,9 @@ export function normalizeConfig(raw = {}) {
     if (!KNOWN_OUTCOMES.includes(kind)) throw new Error(`unknown turn outcome "${kind}"`)
   }
 
-  const minTurnDurationMs = raw.minTurnDurationMs ?? DEFAULT_CONFIG.minTurnDurationMs
-  if (!Number.isInteger(minTurnDurationMs) || minTurnDurationMs < 0) {
-    throw new Error('minTurnDurationMs must be a non-negative integer')
+  const userIdleMs = raw.userIdleMs ?? DEFAULT_CONFIG.userIdleMs
+  if (!Number.isInteger(userIdleMs) || userIdleMs < 0 || userIdleMs > MAX_USER_IDLE_MS) {
+    throw new Error(`userIdleMs must be an integer between 0 and ${MAX_USER_IDLE_MS}`)
   }
 
   return {
@@ -146,7 +149,7 @@ export function normalizeConfig(raw = {}) {
     notifyOn: [...new Set(notifyOn)],
     notifyOnApproval: raw.notifyOnApproval ?? DEFAULT_CONFIG.notifyOnApproval,
     notifyOnQuestion: raw.notifyOnQuestion ?? DEFAULT_CONFIG.notifyOnQuestion,
-    minTurnDurationMs,
+    userIdleMs,
     local: { sound: raw.local?.sound ?? DEFAULT_CONFIG.local.sound },
     ntfy: normalizeNtfy(raw.ntfy),
     feishu: normalizeFeishu(raw.feishu),
@@ -236,7 +239,7 @@ export function buildSettings(config, secrets, platform = process.platform) {
       notifyOn: config.notifyOn,
       notifyOnApproval: config.notifyOnApproval,
       notifyOnQuestion: config.notifyOnQuestion,
-      minTurnDurationMs: config.minTurnDurationMs,
+      userIdleMs: config.userIdleMs,
       local: { sound: config.local.sound },
       ntfy: {
         baseUrl: config.ntfy.baseUrl,

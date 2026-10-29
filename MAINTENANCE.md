@@ -85,12 +85,18 @@ start needs the flag.
 ## Behaviour
 
 - One message per event, rendered from that event's template.
-- Approvals and questions fire while the turn is still open, so answering one is followed
-  by a turn-end notification as well.
+- Approvals and questions are announced while the turn is still open, so answering one is
+  followed by a turn-end notification as well.
 - Every channel is attempted concurrently, each capped at 5 seconds; one dead provider is
   logged and never blocks the others or the turn.
 - The browser channel publishes to open streams only. Nothing is queued: with no page
   attached the send is reported as `no page is listening`.
+- `userIdleMs` is the only gate on delivery: every message is held for that long and
+  dropped when the user acts first. A `turn/start` clears the session, `approval/decided`
+  clears that ask, and answering a question clears it, so a message leaves only once the
+  user has actually stepped away. Default 60 s; `0` delivers immediately. Held timers are
+  unref'd, so a pending message never keeps the host alive, and a host that exits inside
+  the window loses that message.
 
 ## Storage contract
 

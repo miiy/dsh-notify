@@ -10,6 +10,8 @@ an ntfy push to your phone, a Feishu bot message, in any combination.
 - Settings → **Notifications**: pick channels, paste the credentials, press **Send test**
 - Four channels: the OS notification centre (macOS / Windows / Linux), your own browser
   tab, ntfy, and a Feishu bot
+- Only when you have stepped away: every message waits for an idle window (60 s by
+  default) and is dropped if you act inside it — reply, approve, or answer
 - Secrets stay in the Host credential seam, never in the configuration file
 
 ![Plugin icon](icon.svg)

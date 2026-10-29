@@ -391,7 +391,7 @@ await settle()
 const saveCall = calls.find((entry) => entry.endpoint === 'save')
 // Insertion order: the page appends each channel as it is switched on.
 assert.deepEqual(saveCall.payload.config.channels, ['local', 'ntfy', 'browser', 'feishu'])
-assert.equal(saveCall.payload.config.minTurnDurationMs, 0)
+assert.equal(saveCall.payload.config.userIdleMs, 0)
 assert.equal(saveCall.payload.config.templates.turnEnd, '{title}\n{project} · {duration}')
 // The value typed for the eye test is the only pending secret.
 assert.deepEqual(saveCall.payload.secrets, { ntfyTopic: 'paste-me' })

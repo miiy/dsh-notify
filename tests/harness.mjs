@@ -33,10 +33,19 @@ globalThis.fetch = async (url, init) => {
 const CWD = '/tmp/demo-project'
 
 /** Configuration every case starts from: two channels, both stubbed at the boundary. */
-const BASE = { channels: ['local', 'ntfy'], notifyOn: ['completed', 'error', 'max-tokens'] }
+const BASE = {
+  channels: ['local', 'ntfy'],
+  notifyOn: ['completed', 'error', 'max-tokens'],
+  // The suite drives a delivery per turn; the idle window has its own cases.
+  userIdleMs: 0,
+}
 
 /** Browser-only and live: nothing leaves the machine, so the frames must really be written. */
-const BROWSER = { channels: ['browser'], notifyOn: ['completed', 'error', 'max-tokens'] }
+const BROWSER = {
+  channels: ['browser'],
+  notifyOn: ['completed', 'error', 'max-tokens'],
+  userIdleMs: 0,
+}
 
 /** Point the plugin at a throwaway DSH home and write its configuration file. */
 async function makeHome(config) {
@@ -382,10 +391,65 @@ const cases = [
     },
   },
   {
-    name: 'the minimum duration filters short turns',
+    name: 'the idle window holds the turn-end message',
     run: async () => {
-      const booted = await boot({ ...BASE, minTurnDurationMs: 60_000 }, fakeCredentials())
-      assert.equal((await runTurn(booted, { expect: 0 })).length, 0)
+      const booted = await boot({ ...BASE, userIdleMs: 120 }, fakeCredentials())
+      const session = sessionOf('session-1')
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+      booted.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      await flush()
+      assert.equal(reports(booted.lines).length, 0, 'the message went out before the window closed')
+      await waitForReports(booted, liveChannels(booted))
+      assert.equal(deliveries(booted.lines).length, liveChannels(booted))
+    },
+  },
+  {
+    name: 'a turn starting inside the idle window cancels the message',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      const session = sessionOf('session-1')
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 1 } })
+      booted.emit('session/event', session, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+      booted.emit('session/event', session, { type: 'turn/start', data: { turn: 2 } })
+      // Outlast the window: waitForReports(0) polls for longer than it, so a
+      // surviving timer would have fired by the time this returns.
+      await waitForReports(booted, 0)
+      assert.equal(reports(booted.lines).length, 0, 'a cancelled message was still delivered')
+    },
+  },
+  {
+    name: 'the idle window holds an approval ask',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 120 }, fakeCredentials())
+      booted.emit('session/event', sessionOf('s1'), {
+        type: 'approval/asked',
+        data: { id: 'a1', toolName: 'bash', reason: 'needs approval' },
+      })
+      await flush()
+      assert.equal(reports(booted.lines).length, 0, 'the message went out before the window closed')
+      await waitForReports(booted, liveChannels(booted))
+      assert.equal(deliveries(booted.lines)[0] !== undefined, true)
+    },
+  },
+  {
+    name: 'answering an approval inside the idle window cancels the message',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      const session = sessionOf('s1')
+      booted.emit('session/event', session, { type: 'approval/asked', data: { id: 'a1', toolName: 'bash' } })
+      booted.emit('session/event', session, { type: 'approval/decided', data: { id: 'a1', outcome: 'allowed-once' } })
+      await waitForReports(booted, 0)
+      assert.equal(reports(booted.lines).length, 0, 'a cancelled message was still delivered')
+    },
+  },
+  {
+    name: 'answering a question inside the idle window cancels the message',
+    run: async () => {
+      const booted = await boot({ ...BASE, userIdleMs: 100 }, fakeCredentials())
+      // The waterfall settles when the answerer replies, which is the signal the
+      // held message watches: the user is at the keyboard, so nothing is sent.
+      await askQuestion(booted, [{ question: 'which one?' }], 0)
+      assert.equal(reports(booted.lines).length, 0, 'a cancelled message was still delivered')
     },
   },
   {
@@ -452,9 +516,10 @@ const cases = [
     },
   },
   {
-    name: 'a negative duration is rejected at the boundary',
+    name: 'an out-of-range idle window is rejected at the boundary',
     run: async () => {
-      assert.throws(() => normalizeConfig({ minTurnDurationMs: -1 }), /non-negative integer/)
+      assert.throws(() => normalizeConfig({ userIdleMs: -1 }), /between 0 and 3600000/)
+      assert.throws(() => normalizeConfig({ userIdleMs: 3_600_001 }), /between 0 and 3600000/)
     },
   },
   {
@@ -501,8 +566,9 @@ const cases = [
       const home = await makeHome({ channels: ['local'] })
       const booted = createContext()
       await apply(booted.ctx)
+      // The settings page sends the whole configuration, idle window included.
       const result = await booted.rpc('save', {
-        config: { channels: ['local', 'ntfy'] },
+        config: { channels: ['local', 'ntfy'], userIdleMs: 0 },
         secrets: { ntfyTopic: 'fresh-topic' },
       })
       assert.equal(result.ok, true)
