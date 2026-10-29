@@ -1,0 +1,8 @@
+# dsh-notify bundle patch
+#
+# One host row, nothing else. Channels, timing and credentials are edited in
+# Settings -> Notifications and stored outside the profile (config.json plus
+# the Host credential seam), so this layer needs no `config` block.
+- insert:
+    - id: dsh-notify
+      name: dsh-notify

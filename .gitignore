@@ -1,0 +1,6 @@
+node_modules/
+*.log
+.DS_Store
+
+# Machine-local overlay: it names this checkout by absolute path.
+dev.patch.yml

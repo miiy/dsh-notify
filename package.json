@@ -1,0 +1,66 @@
+{
+  "name": "dsh-notify",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Notifications for DeepSeek Harness: desktop toast, browser tab, ntfy push and Feishu bot, on turn end, approval and question.",
+  "icon": "./icon.svg",
+  "homepage": "https://github.com/miiy/dsh-notify#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/miiy/dsh-notify.git"
+  },
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./client": "./client.js",
+    "./package.json": "./package.json",
+    "./locale/*.json": "./locale/*.json"
+  },
+  "files": [
+    "icon.svg",
+    "screenshot.png",
+    "screenshot-wide.png",
+    "index.js",
+    "client.js",
+    "channels.js",
+    "browser.js",
+    "config.js",
+    "rpc.js",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "README.md",
+    "README.zh.md",
+    "MAINTENANCE.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.1-0"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "cordis",
+    "plugin",
+    "bundle",
+    "notification",
+    "ntfy",
+    "feishu"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-client-ui-layout",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ]
+    }
+  },
+  "license": "MIT"
+}
